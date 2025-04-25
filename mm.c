@@ -35,21 +35,20 @@ team_t team = {
     ""
 };
 
-/* single word (4) or double word (8) alignment */
-#define ALIGNMENT 8
-
-/* rounds up to the nearest multiple of ALIGNMENT */
-#define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
-
-
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
-
 /*-----------------------------------------------------------------------------------------------*/
 /*
     Basic constants and macros for manipulating the free list
 */
+// WSIZE는 하나의 워드 크기를 의미하며, 4바이트(32비트)이다.
+// 이 값은 헤더와 푸터 크기로도 사용된다. (각 블록의 헤더와 푸터에는 size + alloc bit를 4바이트에 패킹하여 저장하므로)
 #define WSIZE 4 // Word and header/footer size (bytes)
+// DSIZE는 더블 워드, 즉 8바이트이다.
+// 최소 블록 크기로 사용된다. 블록 하나가 헤더(4바이트) + 푸터(4바이트)를 가지기 때문에 최소 8바이트가 필요하다.
+// 대부분의 시스템에서 8바이트 정렬을 요구하므로, 메모리 정렬을 위해서도 사용된다.
 #define DSIZE 8 // Double word size (bytes)
+// CHUNKSIZE는 힙을 확장할 때 기본적으로 요청하는 크기로, 1<<12 = 4096 = 4KB이다.
+// 메모리 할당 시 적절한 크기의 블록이 없으면 힙을 이만큼 한 번에 늘리는 것이다.
+// 트레이스 성능이나 힙 이용률 등을 조절하는 데 사용된다.
 #define CHUNKSIZE (1<<12) // Extend heap by this amount (bytes)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -67,18 +66,18 @@ team_t team = {
 #define PUT(p, val) (*(unsigned int *)(p) = (val))
 
 // Read the size and allocated fields from address p
-// 주소 p에 있는 헤더 또는 푸터에서 size만 추출한다.
+// 주소 p에 있는 헤더 또는 풋터에서 size만 추출한다.
 // 하위 3비트는 할당 정보로 쓰이므로 ~0x7 마스크로 이를 제거하고 size만 남긴다.
 #define GET_SIZE(p) (GET(p) & ~0x7)
-// 주소 p의 헤더 또는 푸터에서 할당 여부만 추출한다.
+// 주소 p의 헤더 또는 풋터에서 할당 여부만 추출한다.
 // 최하위 비트(0x1)가 1이면 할당, 0이면 미할당
 #define GET_ALLOC(p) (GET(p) & 0x1)
 
 // Given block ptr bp, compute address of its header and footer
 // 블록 포인터 bp는 payload를 가리키고 있으므로, 그보다 앞에 있는 헤더 위치는 WSIZE(4바이트)만큼 앞이다.
 #define HDRP(bp) ((char *)(bp) - WSIZE)
-// 블록 포인터 bp로부터 블록 크기를 계산하여, 그 크기만큼 뒤로 가서 푸터 위치를 계산한다.
-// 전체 블록 크기에서 헤더(4바이트)와 푸터(4바이트)를 고려해 DSIZE(8바이트)를 빼는 것이다.
+// 블록 포인터 bp로부터 블록 크기를 계산하여, 그 크기만큼 뒤로 가서 풋터 위치를 계산한다.
+// 전체 블록 크기에서 헤더(4바이트)와 풋터(4바이트)를 고려해 DSIZE(8바이트)를 빼는 것이다.
 #define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
 
 // Given block ptr bp, compute address of next and previous blocks
@@ -86,7 +85,7 @@ team_t team = {
 // 현재 블록의 시작 위치(bp)에 해당 블록의 전체 크기를 더하면 된다.
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE((char *)(bp) - WSIZE))
 // 이전 블록의 시작 주소를 계산한다.
-// 현재 포인터에서 앞에 있는 푸터 위치(bp - DSIZE)에서 블록 크기를 읽어내어, 그만큼 거슬러 올라간다.
+// 현재 포인터에서 앞에 있는 풋터 위치(bp - DSIZE)에서 블록 크기를 읽어내어, 그만큼 거슬러 올라간다.
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE))
 
 int mm_init(void);
@@ -123,7 +122,7 @@ int mm_init(void)
     // 8바이트 크기의 할당된 블록처럼 보이도록 "프롤로그 헤더"를 설정한다.
     // 항상 할당된 것으로 표시 (alloc = 1)하고, 크기는 8바이트로 설정한다.
     PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1));    // Prologue header
-    // 위의 헤더에 대응하는 푸터다. 프롤로그 블록은 최소 블록 크기인 8바이트로 구성되어 헤더와 푸터를 모두 필요로 한다.
+    // 위의 헤더에 대응하는 풋터다. 프롤로그 블록은 최소 블록 크기인 8바이트로 구성되어 헤더와 풋터를 모두 필요로 한다.
     PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));    // Prologue footer
     // 초기 힙의 끝을 나타내는 에필로그 블록이다. 크기는 0, 할당된 상태다.
     // 에필로그는 언제나 heap의 마지막에 위치하며, 새로 할당된 블록 뒤에 갱신된다.
@@ -158,7 +157,7 @@ static void *extend_heap(size_t words) {
     /* Initialize free block header/footer and the epilogue header */
     // 새로 확장한 블록의 헤더에 크기(size)와 할당 안 됨(0) 표시를 저장
     PUT(HDRP(bp), PACK(size, 0));           // Free block header
-    // 새 블록의 푸터에도 같은 정보 기록
+    // 새 블록의 풋터에도 같은 정보 기록
     PUT(FTRP(bp), PACK(size, 0));           // Free block footer
     // 힙의 끝을 갱신. 이전 에필로그는 중간으로 밀렸고, 새 위치에 크기 0인 새로운 에필로그 헤더를 만든다.
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));   // New epilogue header
@@ -193,7 +192,7 @@ void *mm_malloc(size_t size)
     
     /* Adjust block size to include overhead and alignment reqs */
     // 요청된 크기가 DSIZE(8바이트) 이하이면, 최소 블록 크기인 16바이트(2*DSIZE)로 할당한다.
-    // 이외의 경우에는 size에 헤더와 푸터를 포함한 오버헤드를 더하고, 8바이트 배수로 올림하여 asize를 계산한다.
+    // 이외의 경우에는 size에 헤더와 풋터를 포함한 오버헤드를 더하고, 8바이트 배수로 올림하여 asize를 계산한다.
     if (size <= DSIZE) asize = 2*DSIZE;
     else asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
@@ -217,22 +216,27 @@ void *mm_malloc(size_t size)
     return bp;
 }
 
-// asize 바이트를 수용할 수 있는 빈 블록을 탐색하여 해당 블록의 포인터를 반환한다.
-// 현재 구현 방식은 first-fit 전략이다. 즉, 처음으로 맞는 블록을 발견하면 즉시 반환한다.
 static void *find_fit(size_t asize) {
-    /* First-fit search */
-    // 순회에 사용할 블록 포인터이다. 현재 탐색 중인 블록을 가리킨다.
+    // Best-fit search
     void *bp;
+    void *res = NULL;
+    size_t msize = 2147483647;
 
     // heap_listp에서 시작하여 힙의 마지막(에필로그 블록)까지 순차적으로 블록을 탐색한다.
     // 헤더에서 블록의 크기를 읽어들였을 때 0이면 에필로그 블록에 도달한 것이다.
     for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-        // 현재 블록이 할당되지 않았고, 요청한 크기 asize보다 크거나 같다면 적절한 블록으로 판단한다.
-        // 해당 블록의 포인터를 반환한다.
-        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) return bp;
+        if (!GET_ALLOC(HDRP(bp))) {
+            size_t csize = GET_SIZE(HDRP(bp));
+            // 현재 블록이 할당되지 않았고, 요청한 크기 asize와 같으면 해당 블록의 포인터를 반환한다.
+            if (asize == csize) return bp;
+            // 현재 블록이 할당되지 않았고, 요청한 크기 asize보다 크면, 그 차이가 최소인 블록의 포인터를 찾아 반환한다.
+            else if ((asize < csize) && (msize > csize)) {
+                msize = csize;
+                res = bp;
+            }
+        }
     }
-    // 탐색을 마칠 때까지 적절한 블록을 찾지 못한 경우, NULL을 반환한다.
-    return NULL; // No fit
+    return res;
 }
 
 // bp 위치의 빈 블록에 asize 크기의 블록을 배치한다.
@@ -244,7 +248,7 @@ static void place(void *bp, size_t asize) {
     size_t csize = GET_SIZE(HDRP(bp));
     // 현재 블록을 할당한 후 남는 공간이 2*DSIZE(최소 블록 크기 = 16바이트) 이상이면, 블록을 분할한다.
     // 1. 앞부분은 요청한 크기 asize로 할당 상태로 표시한다.
-    // 2. 남은 뒷부분은 새로운 빈 블록으로 만들고 헤더와 푸터를 설정한다.
+    // 2. 남은 뒷부분은 새로운 빈 블록으로 만들고 헤더와 풋터를 설정한다.
     if ((csize - asize) >= (2*DSIZE)) {
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
@@ -274,7 +278,7 @@ void mm_free(void *ptr)
 
     // 포인터 ptr이 가리키는 블록의 헤더를 통해 전체 블록의 크기를 읽어온다.
     size_t size = GET_SIZE(HDRP(ptr));
-    // 해당 블록의 헤더와 푸터를 갱신하여 "할당되지 않은 상태(alloc=0)"로 설정한다.
+    // 해당 블록의 헤더와 풋터를 갱신하여 "할당되지 않은 상태(alloc=0)"로 설정한다.
     PUT(HDRP(ptr), PACK(size, 0));
     PUT(FTRP(ptr), PACK(size, 0));
     // 인접한 블록들도 비어 있다면 하나로 연결하기 위해 coalesce 함수를 호출한다.
@@ -284,7 +288,7 @@ void mm_free(void *ptr)
 // 포인터 bp가 가리키는 블록과 이전/다음 블록이 비어 있다면 이들을 연결하여 하나의 큰 free 블록으로 만든다.
 // 연결 후 새롭게 만들어진 free 블록의 포인터를 반환한다.
 static void *coalesce(void *bp) {
-    // 바로 앞 블록의 푸터를 통해 해당 블록이 할당되어 있는지를 확인한다.
+    // 바로 앞 블록의 풋터를 통해 해당 블록이 할당되어 있는지를 확인한다.
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     // 바로 다음 블록의 헤더를 통해 해당 블록의 할당 여부를 확인한다.
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
@@ -292,22 +296,22 @@ static void *coalesce(void *bp) {
     size_t size = GET_SIZE(HDRP(bp));
 
     // [Case 1] 이전과 다음 블록이 모두 할당상태
-    // 앞, 뒤 블록이 모두 할당되어 있는 경우 병합하지 않고 현재 블록 포인터를 그대로 반환한다.
+    // 앞, 뒤 블록이 모두 할당되어 있는 경우 연결하지 않고 현재 블록 포인터를 그대로 반환한다.
     if (prev_alloc && next_alloc) {
         return bp;
     }
     // [Case 2] 이전 블록은 할당상태, 다음 블록은 가용상태
-    // 뒤 블록이 비어 있다면, 현재 블록과 다음 블록을 병합한다.
-    // 새로 합쳐진 블록의 크기를 계산하고, 헤더와 푸터를 갱신한다.
+    // 뒤 블록이 비어 있다면, 현재 블록과 다음 블록을 연결한다.
+    // 새로 합쳐진 블록의 크기를 계산하고, 헤더와 풋터를 갱신한다.
     else if (prev_alloc && !next_alloc) {
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
     }
     // [Case 3] 이전 블록은 가용상태, 다음 블록은 할당상태
-    // 앞 블록이 비어 있는 경우, 앞 블록과 현재 블록을 병합한다.
-    // 새로운 헤더는 앞 블록의 헤더 위치에, 푸터는 현재 블록의 푸터 위치에 기록된다.
-    // 이후 병합된 블록의 시작 위치를 반환하기 위해 bp를 갱신한다.
+    // 앞 블록이 비어 있는 경우, 앞 블록과 현재 블록을 연결한다.
+    // 새로운 헤더는 앞 블록의 헤더 위치에, 풋터는 현재 블록의 풋터 위치에 기록된다.
+    // 이후 연결된 블록의 시작 위치를 반환하기 위해 bp를 갱신한다.
     else if (!prev_alloc && next_alloc) {
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size, 0));
@@ -315,15 +319,15 @@ static void *coalesce(void *bp) {
         bp = PREV_BLKP(bp);
     }
     // [Case 4] 이전 블록과 다음 블록 모두 가용상태
-    // 앞과 뒤 블록 모두 비어 있는 경우 세 블록을 하나로 병합한다.
-    // 가장 앞쪽의 헤더와 가장 뒤쪽의 푸터에 병합된 크기를 기록하고, bp를 갱신한다.
+    // 앞과 뒤 블록 모두 비어 있는 경우 세 블록을 하나로 연결한다.
+    // 가장 앞쪽의 헤더와 가장 뒤쪽의 풋터에 연결된 크기를 기록하고, bp를 갱신한다.
     else {
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
-    // 병합된 블록의 시작 주소를 반환한다.
+    // 연결된 블록의 시작 주소를 반환한다.
     return bp;
 }
 /*-----------------------------------------------------------------------------------------------*/
@@ -360,28 +364,41 @@ void *mm_realloc(void *ptr, size_t size)
         return;
     }
 
-    // 기존의 블록 포인터를 oldptr에 저장한다.
-    void *oldptr = ptr;
-    // 새롭게 할당될 블록의 포인터를 저장할 변수이다.
-    void *newptr;
-    // 기존 블록에서 새 블록으로 복사할 데이터의 크기를 저장할 변수이다.
-    size_t copySize;
-    
-    // 새로 요청된 크기만큼의 블록을 할당한다.
-    // 이때 내부적으로 find_fit → place 또는 extend_heap이 호출되어 실제 메모리를 할당받게 된다.
-    newptr = mm_malloc(size);
-    // 만약 메모리 할당에 실패할 경우, NULL을 반환한다.
+    size_t old_size = GET_SIZE(HDRP(ptr));
+    size_t new_asize;
+
+    // 새로운 크기를 헤더/풋터 + 정렬까지 고려하여 계산
+    if (size <= DSIZE) new_asize = 2 * DSIZE;
+    else new_asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+
+    // 요청한 크기가 기존 블록 크기보다 작거나 같다면 그냥 반환
+    if (new_asize <= old_size) return ptr;
+
+    // 다음 블록이 free이고, 합쳤을 때 충분하다면 연결하여 확장
+    void *next_bp = NEXT_BLKP(ptr);
+    size_t next_alloc = GET_ALLOC(HDRP(next_bp));
+    size_t next_size = GET_SIZE(HDRP(next_bp));
+
+    if (!next_alloc && (old_size + next_size) >= new_asize) {
+        // 현재 블록과 다음 블록을 연결
+        size_t total_size = old_size + next_size;
+        PUT(HDRP(ptr), PACK(total_size, 1));
+        PUT(FTRP(ptr), PACK(total_size, 1));
+        return ptr;
+    }
+
+    // 불가능할 경우 새로 할당 후 복사
+    void *newptr = mm_malloc(size);
     if (newptr == NULL) return NULL;
-    // 기존 블록의 크기를 읽어와 복사할 데이터의 최대 크기로 설정한다.
-    copySize = GET_SIZE(HDRP(ptr));
-    // copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    // 만약 요청한 새 크기보다 기존 크기가 더 크다면, 복사 크기를 요청한 크기로 제한한다.
-    // 즉, 데이터를 잘라서 복사한다.
-    if (size < copySize) copySize = size;
-    // oldptr에서 newptr로 copySize 바이트만큼의 데이터를 복사한다.
-    memcpy(newptr, oldptr, copySize);
-    // 기존 블록을 해제해서 메모리 누수를 방지한다.
-    mm_free(oldptr);
-    // 재할당된 새 블록의 포인터를 반환한다.
+
+    // 오버헤드는 제외하고 실제 payload만 복사
+    size_t copy_size = old_size - DSIZE;
+    if (size < copy_size) copy_size = size;
+
+    // ptr에서 newptr로 copy_size 바이트만큼의 데이터를 복사
+    memcpy(newptr, ptr, copy_size);
+    // 기존 블록을 해제해서 메모리 누수를 방지
+    mm_free(ptr);
+    // 재할당된 새 블록의 포인터를 반환
     return newptr;
 }
