@@ -70,7 +70,6 @@ static void *extend_heap(size_t words);
 static void *find_first_fit(size_t asize);
 static void *find_next_fit(size_t asize);
 static void *find_best_fit(size_t asize);
-// static void *find_best_fit(size_t asize);
 static void place(void *bp, size_t asize);
 static void *coalesce(void *bp);
 static void append_free(void *bp);
