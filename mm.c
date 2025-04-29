@@ -29,7 +29,7 @@ team_t team = {"Team8", "Junsik Park", "qkrwns1478@gmail.com", "", ""};
 */
 #define WSIZE 4             // Word and header/footer size (bytes)
 #define DSIZE 8             // Double word size (bytes)
-#define CHUNKSIZE (1<<10)   // Extend heap by this amount (1024 bytes)
+#define CHUNKSIZE (1<<8)   // Extend heap by this amount (1024 bytes)
 #define MINSIZE 16          // Minimum block size
 #define SEGSIZE 16          // Seglist size
 
@@ -137,7 +137,7 @@ void *mm_malloc(size_t size) {
 
     // Search the free list for a fit
     for (int i = get_index(asize); i < SEGSIZE; i++) {
-        if ((bp = find_best_fit(asize, SEG_ROOT(i))) != NULL) {
+        if ((bp = find_first_fit(asize, SEG_ROOT(i))) != NULL) {
             place(bp, asize);
             return bp;
         }
