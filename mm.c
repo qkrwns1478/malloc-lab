@@ -29,9 +29,9 @@ team_t team = {"Team8", "Junsik Park", "qkrwns1478@gmail.com", "", ""};
 */
 #define WSIZE 4             // Word and header/footer size (bytes)
 #define DSIZE 8             // Double word size (bytes)
-#define CHUNKSIZE (1<<8)   // Extend heap by this amount (1024 bytes)
+#define CHUNKSIZE (1<<8)    // Extend heap by this amount (256 bytes for EC2 optimization)
 #define MINSIZE 16          // Minimum block size
-#define SEGSIZE 16          // Seglist size
+#define SEGSIZE 20          // Segregated free list size
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
@@ -55,24 +55,22 @@ team_t team = {"Team8", "Junsik Park", "qkrwns1478@gmail.com", "", ""};
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE))
 
 // Given block ptr bp, compute address of next and previous free blocks
-// NOTE: GCC가 32비트 모드로 실행되기 때문에 포인터 크기는 4바이트
+// GCC가 32비트 모드로 실행되기 때문에 포인터 크기는 4바이트 (Makefile 참고)
 #define NEXT_FREE(bp) (*(void **)(bp))
 #define PREV_FREE(bp) (*(void **)(bp + WSIZE))
 
 #define SEG_ROOT(i) (*(void **)(seglistp + (i*WSIZE)))
+#define SEG_ROOT_ADDR(size) &SEG_ROOT(get_index(size))
 
 int mm_init(void);
 void *mm_malloc(size_t size);
 void mm_free(void *ptr);
 void *mm_realloc(void *ptr, size_t size);
 
-static char *heap_listp;
-static char *seglistp;
-// static char *last;
+static char *heap_listp = NULL;
+static char *seglistp = NULL;
 static void *extend_heap(size_t words);
 static void *find_first_fit(size_t asize, void *root);
-// static void *find_next_fit(size_t asize);
-static void *find_best_fit(size_t asize, void *root);
 static void place(void *bp, size_t asize);
 static void *coalesce(void *bp);
 static void append_free(void *bp, void *root_addr);
@@ -85,18 +83,15 @@ static int get_index(size_t size);
 int mm_init(void) {
     // Create the initial empty heap
     if ((heap_listp = mem_sbrk((SEGSIZE+4)*WSIZE)) == (void *)-1) return -1;
-
     PUT(heap_listp, 0);                                         // Alignment padding
     for (int i=1; i<=SEGSIZE; i++) {
-        PUT(heap_listp + (i*WSIZE), NULL);                      // Seglist root for size class 2**i
+        PUT(heap_listp + (i*WSIZE), NULL);                      // Seglist root for size class
     }
     PUT(heap_listp + ((SEGSIZE+1)*WSIZE), PACK(DSIZE, 1));      // Prologue header
     PUT(heap_listp + ((SEGSIZE+2)*WSIZE), PACK(DSIZE, 1));      // Prologue footer
     PUT(heap_listp + ((SEGSIZE+3)*WSIZE), PACK(0, 1));          // Epilogue header
     seglistp = heap_listp + (1*WSIZE);
     heap_listp += ((SEGSIZE+2)*WSIZE);
-    // last = heap_listp;
-
     // Extend the empty heap with a free block of CHUNKSIZE bytes
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL) return -1;
     return 0;
@@ -136,6 +131,7 @@ void *mm_malloc(size_t size) {
     else asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
     // Search the free list for a fit
+    // 요청된 크기 클래스에서 맞는 블록을 찾지 못했다면 다음 크기의 클래스를 위한 가용 리스트를 검색함
     for (int i = get_index(asize); i < SEGSIZE; i++) {
         if ((bp = find_first_fit(asize, SEG_ROOT(i))) != NULL) {
             place(bp, asize);
@@ -147,7 +143,6 @@ void *mm_malloc(size_t size) {
     extendsize = MAX(asize, CHUNKSIZE);
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL) return NULL;
     place(bp, asize);
-    // last = bp;
     return bp;
 }
 
@@ -158,39 +153,10 @@ static void *find_first_fit(size_t asize, void *root) {
     return NULL;
 }
 
-// static void *find_next_fit(size_t asize) {
-//     for (void *bp = last; bp != NULL; bp = NEXT_FREE(bp)) {
-//         if ((asize <= GET_SIZE(HDRP(bp)))) {
-//             last = bp;
-//             return bp;
-//         }
-//     }
-//     return find_first_fit(asize, root);
-// }
-
-static void *find_best_fit(size_t asize, void *root) {
-    void *bp;
-    void *res = NULL;
-    size_t min_gap = (size_t)-1;
-
-    for (bp = root; bp != NULL; bp = NEXT_FREE(bp)) {
-        size_t csize = GET_SIZE(HDRP(bp));
-        if (csize >= asize) {
-            size_t gap = csize - asize;
-            if (gap < min_gap) {
-                min_gap = gap;
-                res = bp;
-                if (gap == 0) break;
-            }
-        }
-    }
-    return res;
-}
-
 static void place(void *bp, size_t asize) {
     if (bp == NULL) return;
     size_t csize = GET_SIZE(HDRP(bp));
-    void *root_addr = &SEG_ROOT(get_index(csize));
+    void *root_addr = SEG_ROOT_ADDR(csize);
     remove_free(bp, root_addr);
 
     if ((csize - asize) >= MINSIZE) {
@@ -200,7 +166,7 @@ static void place(void *bp, size_t asize) {
         PUT(HDRP(nbp), PACK(csize-asize, 0));
         PUT(FTRP(nbp), PACK(csize-asize, 0));
 
-        void *root_addr = &SEG_ROOT(get_index(csize-asize));
+        void *root_addr = SEG_ROOT_ADDR(csize-asize);
         append_free(nbp, root_addr);
     } else {
         PUT(HDRP(bp), PACK(csize, 1));
@@ -233,7 +199,7 @@ static void *coalesce(void *bp) {
     else if (prev_alloc && !next_alloc) {
         size_t next_size = GET_SIZE(HDRP(NEXT_BLKP(bp)));
         size += next_size;
-        void *next_root_addr = &SEG_ROOT(get_index(next_size));
+        void *next_root_addr = SEG_ROOT_ADDR(next_size);
         remove_free(NEXT_BLKP(bp), next_root_addr);
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size, 0));
@@ -242,7 +208,7 @@ static void *coalesce(void *bp) {
     else if (!prev_alloc && next_alloc) {
         size_t prev_size = GET_SIZE(HDRP(PREV_BLKP(bp)));
         size += prev_size;
-        void *prev_root_addr = &SEG_ROOT(get_index(prev_size));
+        void *prev_root_addr = SEG_ROOT_ADDR(prev_size);
         remove_free(PREV_BLKP(bp), prev_root_addr);
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
@@ -253,19 +219,16 @@ static void *coalesce(void *bp) {
         size_t prev_size = GET_SIZE(HDRP(PREV_BLKP(bp)));
         size_t next_size = GET_SIZE(HDRP(NEXT_BLKP(bp)));
         size += prev_size + next_size;
-        void *prev_root_addr = &SEG_ROOT(get_index(prev_size));
-        void *next_root_addr = &SEG_ROOT(get_index(next_size));
+        void *prev_root_addr = SEG_ROOT_ADDR(prev_size);
+        void *next_root_addr = SEG_ROOT_ADDR(next_size);
         remove_free(PREV_BLKP(bp), prev_root_addr);
         remove_free(NEXT_BLKP(bp), next_root_addr);
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
-    // void *root = SEG_ROOT(get_index(size));
-    // append_free(bp, root);
-    void *root_addr = &SEG_ROOT(get_index(size));
+    void *root_addr = SEG_ROOT_ADDR(size);
     append_free(bp, root_addr);
-    // last = bp;
     return bp;
 }
 /*-----------------------------------------------------------------------------------------------*/
@@ -291,16 +254,38 @@ static void remove_free(void *bp, void *root_addr) {
 }
 
 // Return class index for seglist
+// static int get_index(size_t size) {
+//     size_t a = 1;
+//     size_t b = 2;
+//     if (size <= a) return 0;
+//     for (int i = 0; i < SEGSIZE; i++) {
+//         if (a < size && size <= b) return i; // return i-th size clas
+//         a <<= 1;
+//         b <<= 1;
+//     }
+//     return SEGSIZE-1; // return the largest size class
+// }
 static int get_index(size_t size) {
-    size_t a = 1;
-    size_t b = 2;
-    if (size <= a) return 0;
-    for (int i=0; i<SEGSIZE; i++) {
-        if (a < size && size <= b) return i; // return i-th(2**i) size clas
-        a *= 2;
-        b *= 2;
-    }
-    return SEGSIZE-1; // return the largest size class
+    if (size <= 15) return 0;
+    else if (size == 16) return 1;
+    else if (size <= 64) return 2;
+    else if (size <= 72) return 3;
+    else if (size <= 112) return 4;
+    else if (size <= 128) return 5;
+    else if (size <= 256) return 6;
+    else if (size <= 512) return 7;
+    else if (size <= 4071) return 8;
+    else if (size == 4072) return 9;
+    else if (size <= 4094) return 10;
+    else if (size == 4095) return 11;
+    else if (size <= (1<<13)) return 12;
+    else if (size <= (1<<14)) return 13;
+    else if (size <= (1<<15)) return 14;
+    else if (size <= (1<<16)) return 15;
+    else if (size <= (1<<17)) return 16;
+    else if (size <= (1<<18)) return 17;
+    else if (size <= (1<<19)) return 18;
+    else return 19;
 }
 /*-----------------------------------------------------------------------------------------------*/
 /*
@@ -311,18 +296,59 @@ void *mm_realloc(void *ptr, size_t size)
     if (ptr == NULL) return mm_malloc(size);
     if (size == 0) {
         mm_free(ptr);
-        return;
+        return NULL;
     }
 
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
+    size_t csize = GET_SIZE(HDRP(ptr));
+    size_t asize;
+    if (size <= DSIZE) asize = MINSIZE;
+    else asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
-    newptr = mm_malloc(size);
+    // [Case 1] 이미 충분한 크기일 경우: 그대로 사용 or 분할
+    if (asize <= csize) {
+        if (csize-asize >= MINSIZE) {
+            PUT(HDRP(ptr), PACK(asize, 1));
+            PUT(FTRP(ptr), PACK(asize, 1));
+            void *nbp = NEXT_BLKP(ptr);
+            PUT(HDRP(nbp), PACK(csize-asize, 0));
+            PUT(FTRP(nbp), PACK(csize-asize, 0));
+            append_free(nbp, SEG_ROOT_ADDR(csize-asize));
+        }
+        return ptr;
+    }
+
+    // [Case 2] 다음 블록이 가용상태 + 확장 가능할 경우: 확장 후 리턴
+    void *nbp = NEXT_BLKP(ptr);
+    if (!GET_ALLOC(HDRP(nbp))) {
+        size_t nsize = csize + GET_SIZE(HDRP(nbp));
+        if (nsize >= asize) {
+            void *next_root_addr = SEG_ROOT_ADDR(GET_SIZE(HDRP(nbp)));
+            remove_free(nbp, next_root_addr);
+            PUT(HDRP(ptr), PACK(nsize, 1));
+            PUT(FTRP(ptr), PACK(nsize, 1));
+            return ptr;
+        }
+    }
+
+    // [Case 3] 이전 블록이 가용상태 + 합쳐서 충분한 경우: 합친 후 리턴
+    void *pbp = PREV_BLKP(ptr);
+    if (!GET_ALLOC(HDRP(pbp))) {
+        size_t psize = GET_SIZE(HDRP(pbp));
+        if (csize+psize >= asize) {
+            remove_free(pbp, SEG_ROOT_ADDR(psize));
+            memmove(pbp, ptr, csize);
+            PUT(HDRP(pbp), PACK(csize+psize, 1));
+            PUT(FTRP(pbp), PACK(csize+psize, 1));
+            return pbp;
+        }
+    }
+
+    // [Case 4] 기존 Case: 새로운 블록 할당 후 복사
+    void *newptr = mm_malloc(size);
     if (newptr == NULL) return NULL;
-    copySize = GET_SIZE(HDRP(ptr));
+    size_t copySize = csize;
     if (size < copySize) copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
+    memcpy(newptr, ptr, copySize);
+    mm_free(ptr);
     return newptr;
 }
